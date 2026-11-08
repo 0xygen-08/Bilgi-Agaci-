@@ -1,7 +1,8 @@
+import math
 import re
 
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QPainter, QPen, QTextOption
+from PyQt6.QtGui import QBrush, QColor, QFontMetrics, QPainter, QPainterPath, QPen, QTextOption
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from core.data_manager import extract_plain_preview
 from core.i18n import t
 
 from .components import (
@@ -22,19 +24,17 @@ from .components import (
     BrutalInput,
     BrutalTag,
     SelectionFrameHero,
-    SparkleWidget,
     _PressHoverAnimator,
 )
 from .theme import (
     Borders,
     Colors,
     Metrics,
-    Motion,
     Radii,
-    Shadows,
     Spacing,
     Typography,
     readable_ink,
+    relative_luminance,
     resolve_accent_color,
     resolve_node_bg,
 )
@@ -42,8 +42,10 @@ from .theme import (
 
 class NoteCard(QFrame):
     """
-    Playful Neo-Brutalist Note Card with thick black border, zero-blur hard shadow,
-    pastel fill rotation, bold uppercase title, tag chip, and physical press/hover physics.
+    Obsidian-Style Clean Note Card:
+    - Sleek 1px border with surface hover highlighting
+    - Natural casing for title & preview
+    - Subtle index, clean tag badge & gold star
     """
 
     def __init__(
@@ -52,9 +54,9 @@ class NoteCard(QFrame):
         title: str,
         preview_text: str,
         parent_page: "AllNotesPage",
-        color: str = Colors.PINK,
+        color: str = "",
         tag: str = "",
-        bg_color: str = Colors.YELLOW,
+        bg_color: str = "",
         is_favorite: bool = False,
         card_index: int = 1,
         list_mode: bool = False,
@@ -72,9 +74,7 @@ class NoteCard(QFrame):
         self.list_mode = list_mode
 
         self.setObjectName("NoteCard")
-        self.shadow_px = Shadows.MD
-        self.hover_px = Shadows.HOVER_SHIFT
-        self._motion = _PressHoverAnimator(self, shadow_px=self.shadow_px, hover_px=self.hover_px)
+        self._motion = _PressHoverAnimator(self)
 
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_mode_dimensions()
@@ -119,129 +119,115 @@ class NoteCard(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        inset = float(self.hover_px + 1)
-        face_w = max(40.0, float(self.width()) - inset - self.shadow_px - 2.0)
-        face_h = max(40.0, float(self.height()) - inset - self.shadow_px - 2.0)
+        rect = QRectF(1.0, 1.0, float(self.width()) - 2.0, float(self.height()) - 2.0)
 
-        base_rect = QRectF(inset, inset, face_w, face_h)
-        shadow_rect = base_rect.translated(float(self.shadow_px), float(self.shadow_px))
-        face_rect = base_rect.translated(self._motion.dx, self._motion.dy)
+        # 1. Background Surface
+        fill_col = Colors.SURFACE_HOVER if self._motion._hovered else Colors.SURFACE
+        border_col = Colors.PRIMARY if self._motion._hovered else Colors.BORDER
 
-        # 1. Hard zero-blur black offset shadow
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(Colors.BLACK)))
-        painter.drawRoundedRect(shadow_rect, Radii.LG, Radii.LG)
+        painter.setPen(QPen(QColor(border_col), 1.0))
+        painter.setBrush(QBrush(QColor(fill_col)))
+        painter.drawRoundedRect(rect, Radii.MD, Radii.MD)
 
-        # 2. Saturated pastel face + 3px solid black border
-        painter.setPen(QPen(QColor(Colors.BLACK), Borders.DEFAULT))
-        painter.setBrush(QBrush(QColor(self.bg_color)))
-        painter.drawRoundedRect(face_rect, Radii.LG, Radii.LG)
+        pad = float(Spacing.MD)
+        cur_x = rect.left() + pad
+        top_y = rect.top() + pad
 
-        ink = readable_ink(self.bg_color)
-        muted_ink = readable_ink(self.bg_color, muted=True)
-
-        pad = float(Spacing.LG)
-        cur_x = face_rect.left() + pad
-        top_y = face_rect.top() + float(Spacing.MD)
-
-        # 3. Top Metadata Row: Index Chip + Tag Pill + Favorite Star
+        # 2. Metadata Header: Index + Tag + Star
         idx_font = Typography.label(Typography.SIZE_CAPTION)
         painter.setFont(idx_font)
         idx_str = f"#{self.card_index:02d}"
         idx_fm = QFontMetrics(idx_font)
-        idx_w = float(idx_fm.horizontalAdvance(idx_str) + 12)
-        idx_rect = QRectF(cur_x, top_y, idx_w, 22.0)
-        painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-        painter.setBrush(QBrush(QColor(Colors.WHITE)))
-        painter.drawRoundedRect(idx_rect, 6.0, 6.0)
-        painter.setPen(QPen(QColor(Colors.BLACK)))
-        painter.drawText(idx_rect, Qt.AlignmentFlag.AlignCenter, idx_str)
+        idx_w = float(idx_fm.horizontalAdvance(idx_str) + 8)
+
+        painter.setPen(QPen(QColor(Colors.TEXT_MUTED)))
+        painter.drawText(QRectF(cur_x, top_y, idx_w, 20.0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, idx_str)
         cur_x += idx_w + float(Spacing.SM)
 
         if self.tag:
-            tag_upper = self.tag.upper()
+            tag_text = self.tag
             tag_w = min(
-                float(idx_fm.horizontalAdvance(tag_upper) + Spacing.LG),
-                max(54.0, face_rect.width() - (cur_x - face_rect.left()) - 48.0),
+                float(idx_fm.horizontalAdvance(tag_text) + Spacing.MD * 2),
+                max(48.0, rect.width() - (cur_x - rect.left()) - 36.0),
             )
-            tag_rect = QRectF(cur_x, top_y, tag_w, 22.0)
-            tag_fill = resolve_accent_color(self.color, seed=self.tag, avoid_bg=self.bg_color)
+            tag_rect = QRectF(cur_x, top_y, tag_w, 20.0)
 
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(Colors.BLACK)))
-            painter.drawRoundedRect(tag_rect.translated(2.0, 2.0), 11.0, 11.0)
+            painter.setPen(QPen(QColor(Colors.BORDER), 1.0))
+            painter.setBrush(QBrush(QColor(Colors.SURFACE_ACTIVE)))
+            painter.drawRoundedRect(tag_rect, Radii.SM, Radii.SM)
 
-            painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-            painter.setBrush(QBrush(QColor(tag_fill)))
-            painter.drawRoundedRect(tag_rect, 11.0, 11.0)
-
-            elided_tag = idx_fm.elidedText(tag_upper, Qt.TextElideMode.ElideRight, int(tag_w - 10))
-            painter.setPen(QPen(readable_ink(tag_fill)))
+            elided_tag = idx_fm.elidedText(tag_text, Qt.TextElideMode.ElideRight, int(tag_w - 6))
+            painter.setPen(QPen(QColor(Colors.TEXT_MUTED)))
             painter.drawText(tag_rect, Qt.AlignmentFlag.AlignCenter, elided_tag)
 
         if self.is_favorite:
-            star_sz = 24.0
-            star_rect = QRectF(face_rect.right() - pad - star_sz, top_y - 1.0, star_sz, star_sz)
-            star_bg = Colors.PINK if self.bg_color.lower() == Colors.YELLOW.lower() else Colors.YELLOW
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(Colors.BLACK)))
-            painter.drawRoundedRect(star_rect.translated(2.0, 2.0), 7.0, 7.0)
-            painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-            painter.setBrush(QBrush(QColor(star_bg)))
-            painter.drawRoundedRect(star_rect, 7.0, 7.0)
-            painter.setPen(QPen(QColor(Colors.BLACK)))
-            painter.drawText(star_rect, Qt.AlignmentFlag.AlignCenter, "★")
+            star_sz = 14.0
+            cx = rect.right() - pad - star_sz / 2.0
+            cy = top_y + 10.0
 
-        # 4. Bold UPPERCASE Card Title
-        title_font = Typography.heading(Typography.SIZE_CARD_TITLE + 1)
+            star_path = QPainterPath()
+            outer_r = 5.5
+            inner_r = 2.5
+            for i in range(10):
+                r = outer_r if i % 2 == 0 else inner_r
+                angle = -math.pi / 2.0 + i * math.pi / 5.0
+                px = cx + r * math.cos(angle)
+                py = cy + r * math.sin(angle)
+                if i == 0:
+                    star_path.moveTo(px, py)
+                else:
+                    star_path.lineTo(px, py)
+            star_path.closeSubpath()
+
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor("#f59e0b")))
+            painter.drawPath(star_path)
+
+        # 3. Clean Card Title
+        title_font = Typography.heading(Typography.SIZE_CARD_TITLE)
         painter.setFont(title_font)
-        painter.setPen(QPen(ink))
+        painter.setPen(QPen(QColor(Colors.TEXT)))
         title_fm = QFontMetrics(title_font)
-        title_top = top_y + 32.0
-        content_w = face_rect.width() - pad * 2.0
+        title_top = top_y + 26.0
+        content_w = rect.width() - pad * 2.0
 
         if self.list_mode:
-            elided_title = title_fm.elidedText(self.title.upper(), Qt.TextElideMode.ElideRight, int(content_w))
-            title_rect = QRectF(face_rect.left() + pad, title_top, content_w, 24.0)
+            elided_title = title_fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(content_w))
+            title_rect = QRectF(rect.left() + pad, title_top, content_w, 22.0)
             painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_title)
-            preview_top = title_top + 26.0
+            preview_top = title_top + 24.0
         else:
-            title_h = float(title_fm.lineSpacing() * 2 + 2)
-            title_rect = QRectF(face_rect.left() + pad, title_top, content_w, title_h)
-            opt = QTextOption(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            opt.setWrapMode(QTextOption.WrapMode.WordWrap)
-            # Clamp to 2 lines cleanly
-            words_title = self.title.upper()
-            if title_fm.horizontalAdvance(words_title) > content_w * 1.85:
-                words_title = title_fm.elidedText(words_title, Qt.TextElideMode.ElideRight, int(content_w * 1.8))
-            painter.drawText(title_rect, words_title, opt)
-            used_h = float(title_fm.lineSpacing() * (2 if title_fm.horizontalAdvance(words_title) > content_w else 1))
-            preview_top = title_top + used_h + 6.0
+            title_h = float(title_fm.lineSpacing() + 4)
+            title_rect = QRectF(rect.left() + pad, title_top, content_w, title_h)
+            elided_title = title_fm.elidedText(self.title, Qt.TextElideMode.ElideRight, int(content_w))
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, elided_title)
+            preview_top = title_top + title_h + 4.0
 
-        # 5. Thin black divider rule + readable preview body
-        painter.setPen(QPen(QColor(Colors.BLACK), 1.5))
+        # 4. Subtle Divider
+        painter.setPen(QPen(QColor(Colors.BORDER), 1.0))
         painter.drawLine(
-            int(face_rect.left() + pad),
+            int(rect.left() + pad),
             int(preview_top),
-            int(face_rect.right() - pad),
+            int(rect.right() - pad),
             int(preview_top),
         )
 
-        body_font = Typography.body(Typography.SIZE_LABEL + 1)
+        # 5. Preview Body
+        body_font = Typography.body(Typography.SIZE_LABEL)
         painter.setFont(body_font)
-        painter.setPen(QPen(muted_ink))
+        painter.setPen(QPen(QColor(Colors.TEXT_MUTED)))
         body_fm = QFontMetrics(body_font)
 
-        avail_h = max(18.0, face_rect.bottom() - float(Spacing.MD) - (preview_top + 8.0))
+        avail_h = max(16.0, rect.bottom() - float(Spacing.SM) - (preview_top + 6.0))
         max_lines = max(1, int(avail_h // max(1, body_fm.lineSpacing())))
         preview_str = self.preview_text.strip()
-        if body_fm.horizontalAdvance(preview_str) > content_w * max_lines * 0.92:
+        if body_fm.horizontalAdvance(preview_str) > content_w * max_lines * 0.95:
             preview_str = body_fm.elidedText(
                 preview_str,
                 Qt.TextElideMode.ElideRight,
-                int(content_w * max_lines * 0.9),
+                int(content_w * max_lines * 0.92),
             )
-        body_rect = QRectF(face_rect.left() + pad, preview_top + 8.0, content_w, avail_h)
+        body_rect = QRectF(rect.left() + pad, preview_top + 6.0, content_w, avail_h)
         body_opt = QTextOption(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         body_opt.setWrapMode(QTextOption.WrapMode.WordWrap)
         painter.drawText(body_rect, preview_str, body_opt)
@@ -250,15 +236,6 @@ class NoteCard(QFrame):
 
 
 class AllNotesPage(QWidget):
-    """
-    Neo-Brutalist Notes List / Favorites Screen:
-    - Light-blue (#C0F7FE) background
-    - Bold uppercase page title + rotated sticker count badge + ✦ sparkle star
-    - Thick-bordered white search filter + Grid/List view toggle
-    - Pastel tag filter chips row
-    - Responsive pastel-rotated NoteCards + Empty-state SelectionFrameHero + Floating yellow FAB
-    """
-
     def __init__(self, data_manager, main_window, favorites_only=False):
         super().__init__()
         self.data_manager = data_manager
@@ -266,72 +243,55 @@ class AllNotesPage(QWidget):
         self.favorites_only = favorites_only
 
         self.list_mode = False
-        self.active_tag_filter = None  # None == All
+        self.active_tag_filter = None
         self.filter_query = ""
         self.note_widgets: list[NoteCard] = []
         self.tag_chips: list[BrutalChip] = []
         self.current_col_count = 0
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(Spacing.XXL, Spacing.XL, Spacing.XXL, Spacing.XL)
-        layout.setSpacing(Spacing.LG)
+        layout.setContentsMargins(Spacing.XL, Spacing.LG, Spacing.XL, Spacing.LG)
+        layout.setSpacing(Spacing.MD)
 
         # --- HEADER BAR ---
         header_row = QHBoxLayout()
         header_row.setSpacing(Spacing.MD)
 
-        header_row.addWidget(SparkleWidget(26))
-
         raw_title = t("favorite_notes_title") if favorites_only else t("all_notes_title")
-        clean_title = re.sub(r"^[▤☆\s]+", "", raw_title).strip().upper()
-        self.title_lbl = QLabel(clean_title)
+        self.title_lbl = QLabel(raw_title)
         self.title_lbl.setFont(Typography.display(Typography.SIZE_PAGE_TITLE))
-        self.title_lbl.setStyleSheet(f"color: {Colors.BLACK}; background: transparent;")
+        self.title_lbl.setStyleSheet(f"color: {Colors.TEXT}; background: transparent;")
         header_row.addWidget(self.title_lbl)
 
-        sticker_color = Colors.PINK if favorites_only else Colors.YELLOW
-        self.count_sticker = BrutalTag(
-            t("fav_sticker" if favorites_only else "notes_sticker", count=0),
-            fill_color=sticker_color,
-            tilt_deg=Motion.STICKER_TILT_DEG,
-        )
-        header_row.addWidget(self.count_sticker)
+        self.count_badge = BrutalTag("0", fill_color=Colors.SURFACE_HOVER, pill=True)
+        header_row.addWidget(self.count_badge)
 
         header_row.addStretch()
 
-        # Filter Search Input
+        # Search Input
         self.filter_input = BrutalInput(
             placeholder=t("filter_notes_placeholder"),
-            fill_color=Colors.WHITE,
-            shadow_px=Shadows.MD,
+            fill_color=Colors.SURFACE,
+            face_height=32,
         )
-        self.filter_input.setFixedWidth(250)
+        self.filter_input.setFixedWidth(220)
         self.filter_input.textChanged.connect(self._on_filter_text_changed)
         header_row.addWidget(self.filter_input)
 
-        # Grid / List View Toggle Buttons
-        self.btn_grid_mode = BrutalIconButton("▦", variant="nav", size=Metrics.ICON_BTN_SIZE)
+        # Grid / List Toggle
+        self.btn_grid_mode = BrutalIconButton("Izgara", variant="surface", size=32, min_width=54)
         self.btn_grid_mode.setCheckable(True)
         self.btn_grid_mode.setChecked(True)
-        self.btn_grid_mode.setToolTip(t("grid_view_tooltip"))
         self.btn_grid_mode.clicked.connect(lambda: self._set_view_mode(list_mode=False))
 
-        self.btn_list_mode = BrutalIconButton("☰", variant="nav", size=Metrics.ICON_BTN_SIZE)
+        self.btn_list_mode = BrutalIconButton("Liste", variant="surface", size=32, min_width=54)
         self.btn_list_mode.setCheckable(True)
         self.btn_list_mode.setChecked(False)
-        self.btn_list_mode.setToolTip(t("list_view_tooltip"))
         self.btn_list_mode.clicked.connect(lambda: self._set_view_mode(list_mode=True))
 
         header_row.addWidget(self.btn_grid_mode)
         header_row.addWidget(self.btn_list_mode)
         layout.addLayout(header_row)
-
-        # Subtitle
-        subtitle_str = t("favorite_notes_desc") if favorites_only else t("all_notes_desc")
-        self.subtitle_lbl = QLabel(subtitle_str)
-        self.subtitle_lbl.setFont(Typography.body(Typography.SIZE_BODY))
-        self.subtitle_lbl.setStyleSheet(f"color: {Colors.BLACK}; background: transparent;")
-        layout.addWidget(self.subtitle_lbl)
 
         # --- TAG FILTER CHIPS BAR ---
         self.chips_container = QWidget()
@@ -340,7 +300,7 @@ class AllNotesPage(QWidget):
         self.chips_layout.setSpacing(Spacing.SM)
         layout.addWidget(self.chips_container)
 
-        # --- CONTENT STACK: [0] Cards Scroll Area, [1] Empty State Hero ---
+        # --- CONTENT STACK ---
         self.content_stack = QStackedWidget()
 
         self.scroll_area = QScrollArea()
@@ -352,42 +312,41 @@ class AllNotesPage(QWidget):
         self.grid_widget.setStyleSheet("background: transparent;")
         self.grid_layout = QGridLayout(self.grid_widget)
         self.grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.grid_layout.setContentsMargins(0, Spacing.XS, Spacing.MD, Spacing.XXL * 2)
-        self.grid_layout.setSpacing(Spacing.XL)
+        self.grid_layout.setContentsMargins(0, Spacing.XS, Spacing.SM, Spacing.XL)
+        self.grid_layout.setSpacing(Spacing.MD)
 
         self.scroll_area.setWidget(self.grid_widget)
         self.content_stack.addWidget(self.scroll_area)
 
-        # Empty State Container
-        empty_wrap = QWidget()
-        empty_layout = QVBoxLayout(empty_wrap)
-        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        empty_headline = t("no_favorite_notes") if favorites_only else t("no_notes_in_tab")
+        # Empty State
+        empty_badge = t("favorites_empty_badge") if favorites_only else t("all_notes_empty_badge")
+        empty_title = t("favorites_empty_title") if favorites_only else t("all_notes_empty_title")
+        empty_desc = t("favorites_empty_desc") if favorites_only else t("all_notes_empty_desc")
+        empty_cta = "" if favorites_only else t("new_node_btn")
+
         self.empty_hero = SelectionFrameHero(
-            badge_text=t("empty_notes_badge"),
-            headline_text=empty_headline,
-            desc_text=t("empty_canvas_desc"),
-            cta_text=t("add_new_note"),
+            badge_text=empty_badge,
+            headline_text=empty_title,
+            desc_text=empty_desc,
+            cta_text=empty_cta,
+            parent=self,
         )
-        self.empty_hero.action_clicked.connect(self._create_note_from_page)
+        if empty_cta:
+            self.empty_hero.action_clicked.connect(self._create_new_note)
+
+        empty_wrapper = QWidget()
+        empty_layout = QVBoxLayout(empty_wrapper)
+        empty_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(self.empty_hero)
-        self.content_stack.addWidget(empty_wrap)
+        self.content_stack.addWidget(empty_wrapper)
 
         layout.addWidget(self.content_stack, 1)
 
-        # --- FLOATING ACTION BUTTON (FAB) ---
-        self.fab = BrutalFAB(self, tooltip=t("add_new_note"))
-        self.fab.clicked.connect(self._create_note_from_page)
-        self.fab.raise_()
+        # Floating Action Button
+        self.fab = BrutalFAB(self, tooltip=t("new_node_btn"))
+        self.fab.clicked.connect(self._create_new_note)
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(Colors.LIGHT_BLUE))
-        painter.end()
-
-    def _create_note_from_page(self):
-        if self.main_window:
-            self.main_window.create_new_node()
+        self.refresh_notes()
 
     def _set_view_mode(self, list_mode: bool):
         self.list_mode = list_mode
@@ -395,184 +354,166 @@ class AllNotesPage(QWidget):
         self.btn_list_mode.setChecked(list_mode)
         for card in self.note_widgets:
             card.set_list_mode(list_mode)
-        self.rearrange_grid(force=True)
+        self._rebuild_grid_layout()
 
     def _on_filter_text_changed(self, text: str):
         self.filter_query = text.strip().lower()
-        self.refresh_notes()
+        self.apply_filters()
 
-    def _select_tag_filter(self, tag_val: str | None):
-        self.active_tag_filter = tag_val
-        self.refresh_notes()
-
-    def _rebuild_tag_chips(self, unique_tags: list[str]):
+    def _on_tag_filter_clicked(self, tag_name: str | None):
+        self.active_tag_filter = tag_name
         for chip in self.tag_chips:
-            self.chips_layout.removeWidget(chip)
-            chip.deleteLater()
-        self.tag_chips.clear()
+            is_active = (chip.property("tag_value") == tag_name)
+            chip.blockSignals(True)
+            chip.setChecked(is_active)
+            chip.blockSignals(False)
+            chip.update()
+        self.apply_filters()
 
-        # Remove trailing stretch items
-        while self.chips_layout.count() > 0:
-            item = self.chips_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+    def _create_new_note(self):
+        if hasattr(self.main_window, "create_new_node"):
+            self.main_window.create_new_node()
 
-        all_chip = BrutalChip(t("all_filter"), pastel_color=Colors.YELLOW)
-        all_chip.setChecked(self.active_tag_filter is None)
-        all_chip.clicked.connect(lambda: self._select_tag_filter(None))
-        self.chips_layout.addWidget(all_chip)
-        self.tag_chips.append(all_chip)
-
-        for idx, tag_str in enumerate(unique_tags):
-            pastel = Colors.TAG_ROTATION[idx % len(Colors.TAG_ROTATION)]
-            chip = BrutalChip(tag_str, pastel_color=pastel)
-            chip.setChecked(self.active_tag_filter == tag_str)
-            chip.clicked.connect(lambda checked, tg=tag_str: self._select_tag_filter(tg))
-            self.chips_layout.addWidget(chip)
-            self.tag_chips.append(chip)
-
-        self.chips_layout.addStretch()
-        self.chips_container.setVisible(len(unique_tags) > 0)
-
-    def _extract_preview(self, node_data: dict) -> str:
-        cached = (node_data.get("preview") or "").strip()
-        if cached:
-            return cached
-        try:
-            raw = self.data_manager.load_note_content(node_data["id"])
-            clean = re.sub(r"<[^>]+>", " ", raw)
-            clean = re.sub(r"\s+", " ", clean).strip()
-            if clean and clean != f"#{node_data.get('title', '')} İçeriği buraya yazın...":
-                return clean[:120] + ("..." if len(clean) > 120 else "")
-        except Exception:
-            pass
-        return t("click_to_view_note")
+    def open_note_signal(self, node_id: str):
+        if hasattr(self.main_window, "open_editor_for_node_id"):
+            self.main_window.open_editor_for_node_id(node_id)
+        elif hasattr(self.main_window, "open_editor"):
+            title = ""
+            for card in self.note_widgets:
+                if card.node_id == node_id:
+                    title = card.title
+                    break
+            self.main_window.open_editor(node_id, title)
 
     def refresh_notes(self):
-        for widget in self.note_widgets:
-            self.grid_layout.removeWidget(widget)
-            widget.deleteLater()
+        data = self.data_manager.load_tree()
+        all_nodes = data.get("nodes", [])
+
+        if self.favorites_only:
+            nodes_to_show = [n for n in all_nodes if n.get("is_favorite", False)]
+        else:
+            nodes_to_show = all_nodes
+
+        self._clear_grid()
         self.note_widgets.clear()
-        self.current_col_count = 0
 
-        tree_data = self.data_manager.load_tree()
-        nodes = tree_data.get("nodes", [])
+        all_tags = set()
+        for idx, node in enumerate(nodes_to_show, 1):
+            tag = node.get("tag", "").strip()
+            if tag:
+                all_tags.add(tag)
 
-        # Collect eligible nodes (respecting favorites_only) for tag chips
-        base_nodes = [
-            n for n in nodes if (not self.favorites_only or n.get("is_favorite", False))
-        ]
-
-        unique_tags = []
-        seen_tags = set()
-        for n in base_nodes:
-            tg = (n.get("tag") or "").strip()
-            if tg and tg not in seen_tags:
-                seen_tags.add(tg)
-                unique_tags.append(tg)
-
-        if self.active_tag_filter and self.active_tag_filter not in seen_tags:
-            self.active_tag_filter = None
-
-        self._rebuild_tag_chips(unique_tags)
-
-        # Filter by active tag & search query
-        filtered_nodes = []
-        for n in base_nodes:
-            tg = (n.get("tag") or "").strip()
-            if self.active_tag_filter and tg != self.active_tag_filter:
-                continue
-            preview = self._extract_preview(n)
-            if self.filter_query:
-                haystack = f"{n.get('title', '')} {tg} {preview}".lower()
-                if self.filter_query not in haystack:
-                    continue
-            filtered_nodes.append((n, preview))
-
-        # Update rotated count sticker
-        sticker_key = "fav_sticker" if self.favorites_only else "notes_sticker"
-        self.count_sticker.setText(t(sticker_key, count=len(filtered_nodes)))
-
-        if not filtered_nodes:
-            self.content_stack.setCurrentIndex(1)
-            return
-
-        self.content_stack.setCurrentIndex(0)
-
-        for idx, (node_data, preview_content) in enumerate(filtered_nodes):
-            nid = node_data["id"]
-            raw_bg = node_data.get("bg_color", "")
-            # Rotate pastel colors playfully across cards while respecting explicit pastel choices
-            if not raw_bg or raw_bg.strip().lower() in Colors.LEGACY_DARK_BGS:
-                card_bg = Colors.CARD_ON_BLUE_ROTATION[idx % len(Colors.CARD_ON_BLUE_ROTATION)]
-            else:
-                card_bg = resolve_node_bg(raw_bg, seed=nid, on_light_blue=True)
+            raw_preview = node.get("preview") or ""
+            if not raw_preview:
+                raw_preview = self.data_manager.load_note_content(node.get("id"))
+            clean_preview = extract_plain_preview(raw_preview, max_len=140)
 
             card = NoteCard(
-                nid,
-                node_data["title"],
-                preview_content,
-                self,
-                color=node_data.get("color", ""),
-                tag=node_data.get("tag", ""),
-                bg_color=card_bg,
-                is_favorite=node_data.get("is_favorite", False),
-                card_index=idx + 1,
+                node_id=node.get("id"),
+                title=node.get("title", t("untitled")),
+                preview_text=clean_preview,
+                parent_page=self,
+                color=node.get("color", ""),
+                tag=tag,
+                bg_color=node.get("bg_color", ""),
+                is_favorite=node.get("is_favorite", False),
+                card_index=idx,
                 list_mode=self.list_mode,
             )
             self.note_widgets.append(card)
 
-        self.rearrange_grid(force=True)
+        self.count_badge.setText(str(len(nodes_to_show)))
+        self._populate_tag_chips(sorted(all_tags))
+        self.apply_filters()
 
-    def _position_fab(self):
-        margin = Spacing.XL + 4
-        x = max(Spacing.LG, self.width() - self.fab.width() - margin)
-        y = max(Spacing.LG, self.height() - self.fab.height() - margin)
-        self.fab.move(x, y)
-        self.fab.raise_()
+    def _populate_tag_chips(self, sorted_tags: list[str]):
+        while self.chips_layout.count():
+            item = self.chips_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.tag_chips.clear()
+
+        if not sorted_tags:
+            self.chips_container.hide()
+            return
+        self.chips_container.show()
+
+        all_chip = BrutalChip(t("all_notes_chip"), pastel_color=Colors.PRIMARY)
+        all_chip.setProperty("tag_value", None)
+        all_chip.setChecked(self.active_tag_filter is None)
+        all_chip.clicked.connect(lambda: self._on_tag_filter_clicked(None))
+        self.chips_layout.addWidget(all_chip)
+        self.tag_chips.append(all_chip)
+
+        for tag_str in sorted_tags:
+            accent_col = resolve_accent_color("", seed=tag_str)
+            chip = BrutalChip(tag_str, pastel_color=accent_col)
+            chip.setProperty("tag_value", tag_str)
+            chip.setChecked(self.active_tag_filter == tag_str)
+            t_val = tag_str
+            chip.clicked.connect(lambda _, val=t_val: self._on_tag_filter_clicked(val))
+            self.chips_layout.addWidget(chip)
+            self.tag_chips.append(chip)
+
+        self.chips_layout.addStretch()
+
+    def apply_filters(self):
+        visible_cards = []
+        q = self.filter_query
+        active_tag = self.active_tag_filter
+
+        for card in self.note_widgets:
+            match_text = True
+            if q:
+                match_text = (q in card.title.lower()) or (q in card.preview_text.lower()) or (q in card.tag.lower())
+
+            match_tag = True
+            if active_tag is not None:
+                match_tag = (card.tag.lower() == active_tag.lower())
+
+            visible = match_text and match_tag
+            card.setVisible(visible)
+            if visible:
+                visible_cards.append(card)
+
+        if not visible_cards:
+            self.content_stack.setCurrentIndex(1)
+            self.fab.hide()
+        else:
+            self.content_stack.setCurrentIndex(0)
+            self._rebuild_grid_layout(visible_cards)
+            self.fab.show()
+            self.fab.raise_()
+
+    def _clear_grid(self):
+        while self.grid_layout.count():
+            item = self.grid_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+    def _rebuild_grid_layout(self, cards: list[NoteCard] | None = None):
+        self._clear_grid()
+        if cards is None:
+            cards = [c for c in self.note_widgets if c.isVisible()]
+
+        if self.list_mode:
+            for row_idx, card in enumerate(cards):
+                self.grid_layout.addWidget(card, row_idx, 0)
+        else:
+            col_width = Metrics.NOTE_CARD_WIDTH + Spacing.MD
+            avail_w = max(col_width, self.scroll_area.viewport().width() - Spacing.MD * 2)
+            cols = max(1, avail_w // col_width)
+            for idx, card in enumerate(cards):
+                r = idx // cols
+                c = idx % cols
+                self.grid_layout.addWidget(card, r, c)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._position_fab()
-        self.rearrange_grid()
-
-    def rearrange_grid(self, force=False):
-        if not hasattr(self, "grid_layout") or not hasattr(self, "note_widgets"):
-            return
-
-        if self.list_mode:
-            self.grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-            self.grid_layout.setColumnStretch(0, 1)
-            new_col_count = 1
-        else:
-            self.grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-            self.grid_layout.setColumnStretch(0, 0)
-            available_width = self.scroll_area.viewport().width()
-            if available_width < 50:
-                available_width = self.width() - Spacing.XXL * 2
-
-            card_width = Metrics.NOTE_CARD_WIDTH
-            spacing = self.grid_layout.spacing()
-            margins = self.grid_layout.contentsMargins()
-            usable_width = available_width - margins.left() - margins.right()
-            new_col_count = max(1, (usable_width + spacing) // (card_width + spacing))
-
-        if new_col_count == self.current_col_count and not force:
-            return
-
-        self.current_col_count = new_col_count
-
-        for i, widget in enumerate(self.note_widgets):
-            row = i // new_col_count
-            col = i % new_col_count
-            self.grid_layout.addWidget(widget, row, col)
-
-    def open_note_signal(self, node_id):
-        self.main_window.switch_to_tree_view()
-        node = self.main_window.scene.nodes.get(node_id)
-        if node:
-            self.main_window.canvas_view.resetTransform()
-            self.main_window.canvas_view.centerOn(node)
-            self.main_window.scene.clearSelection()
-            node.setSelected(True)
-            self.main_window.open_editor(node_id, node.title)
+        margin = Spacing.XL
+        fx = max(Spacing.MD, self.width() - self.fab.width() - margin)
+        fy = max(Spacing.MD, self.height() - self.fab.height() - margin)
+        self.fab.move(fx, fy)
+        self.fab.raise_()
+        if not self.list_mode:
+            self._rebuild_grid_layout()

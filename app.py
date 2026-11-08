@@ -24,11 +24,27 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
+    # Sistem Teması (Aydınlık / Karanlık) Algılama ve Uygulama
+    from PyQt6.QtCore import Qt
+    from ui.theme import Colors, Typography, is_system_dark_mode
+    Colors.set_theme_mode(is_system_dark_mode())
+
     # Bundled Neo-Brutalist Poppins font ailesini yükle
     Typography.load_fonts()
     app.setFont(Typography.body())
 
     window = MainWindow(data_manager)
+
+    # Sistem teması canlı değişirse anlık uygula
+    def on_color_scheme_changed(scheme):
+        is_dark = (scheme == Qt.ColorScheme.Dark)
+        Colors.set_theme_mode(is_dark)
+        if hasattr(window, "apply_system_theme"):
+            window.apply_system_theme()
+
+    if hasattr(app.styleHints(), "colorSchemeChanged"):
+        app.styleHints().colorSchemeChanged.connect(on_color_scheme_changed)
+
     window.show()
 
     sys.exit(app.exec())

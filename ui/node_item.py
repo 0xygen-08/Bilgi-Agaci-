@@ -1,5 +1,12 @@
+import math
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen
+from PyQt6.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QPainterPath,
+    QPen,
+)
 from PyQt6.QtWidgets import QGraphicsItem, QGraphicsTextItem
 
 from .theme import (
@@ -7,17 +14,24 @@ from .theme import (
     Colors,
     Metrics,
     Radii,
-    Shadows,
     Spacing,
     Typography,
     readable_ink,
+    relative_luminance,
     resolve_accent_color,
     resolve_node_bg,
 )
 
 
 class NodeItem(QGraphicsItem):
-    """Neo-Brutalist Mind-Map Node Card on QGraphicsScene."""
+    """
+    Obsidian Canvas Node Item:
+    - Minimalist rectangular card with 1px hairline border
+    - Deep dark slate surface (#202024) in dark mode, crisp white in light mode
+    - Optional colored left accent indicator
+    - Clean typography with natural sentence casing
+    - Clean tag badge & subtle gold favorite star
+    """
 
     def __init__(
         self,
@@ -25,27 +39,33 @@ class NodeItem(QGraphicsItem):
         title,
         x,
         y,
-        parent_scene,
-        color=None,
+        parent_scene=None,
+        color="",
         tag="",
         width=180,
-        height=92,
-        bg_color=None,
+        height=100,
+        bg_color="",
         is_favorite=False,
+        preview="",
+        ocr_text="",
     ):
         super().__init__()
         self.node_id = node_id
         self.title = title
         self.parent_scene = parent_scene
-        self.color = resolve_accent_color(color or "", seed=f"{node_id}_accent")
-        self.tag = tag
+        self.color = color or ""
+        self.tag = tag or ""
         self.width = width
         self.height = height
-        self.bg_color = resolve_node_bg(bg_color or "", seed=node_id, on_light_blue=False)
+        self.bg_color = bg_color or ""
         self.is_favorite = is_favorite
+        self.preview = preview
+        self.ocr_text = ocr_text
 
         self._hovered = False
         self._is_resizing = False
+        self._drag_start_pos = QPointF(x, y)
+        self._pre_action_snapshot = None
 
         self.setPos(x, y)
         self.setAcceptHoverEvents(True)
@@ -60,37 +80,34 @@ class NodeItem(QGraphicsItem):
         self._adjust_title_pos()
 
     def _effective_bg(self) -> str:
-        return resolve_node_bg(self.bg_color, seed=self.node_id, on_light_blue=False)
+        return Colors.NODE_SURFACE
 
     def _sync_ink_color(self):
-        self.title_item.setDefaultTextColor(readable_ink(self._effective_bg()))
+        self.title_item.setDefaultTextColor(QColor(Colors.TEXT))
 
     def _adjust_title_pos(self):
-        top_y = float(Spacing.MD) if not self.tag else 38.0
-        right_reserve = 38.0 if self.is_favorite and not self.tag else float(Spacing.LG * 2)
-        self.title_item.setPos(float(Spacing.LG), top_y)
-        self.title_item.setTextWidth(max(60.0, float(self.width) - right_reserve))
+        top_y = float(Spacing.MD) if not self.tag else 30.0
+        right_reserve = 32.0 if self.is_favorite and not self.tag else float(Spacing.MD * 2)
+        left_pad = float(Spacing.MD + (6 if self.color else 0))
+        self.title_item.setPos(left_pad, top_y)
+        self.title_item.setTextWidth(max(60.0, float(self.width) - right_reserve - left_pad))
         self._adjust_title_font()
 
     def _adjust_title_font(self):
-        # Proportional font scaling when user resizes the node box
         scale_factor = min(self.width / 160.0, self.height / 84.0)
         current_size = max(Typography.PT_NODE_BASE, int(Typography.PT_NODE_BASE * scale_factor))
 
-        font = Typography.canvas_font(current_size, QFont.Weight.ExtraBold)
-        font.setCapitalization(QFont.Capitalization.AllUppercase)
+        font = Typography.canvas_font(current_size, QFont.Weight.DemiBold)
         self.title_item.setFont(font)
 
-        max_height = max(22.0, float(self.height - (50 if self.tag else 26)))
+        max_height = max(20.0, float(self.height - (42 if self.tag else 20)))
         while current_size > Typography.PT_NODE_MIN and self.title_item.boundingRect().height() > max_height:
             current_size -= 1
             font.setPointSize(current_size)
             self.title_item.setFont(font)
 
     def boundingRect(self):
-        # Symmetric margin covers hover lift, 3px border, 6px hard shadow, and corner handles
-        # while keeping boundingRect().center() == (width/2, height/2).
-        margin = 10.0
+        margin = 4.0
         return QRectF(
             -margin,
             -margin,
@@ -117,112 +134,99 @@ class NodeItem(QGraphicsItem):
     def hoverEnterEvent(self, event):
         self._hovered = True
         self.update()
+        if hasattr(self.parent_scene, "node_hover_enter"):
+            screen_pt = event.screenPos()
+            self.parent_scene.node_hover_enter(self, screen_pt)
         super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
         self._hovered = False
         self.update()
+        if hasattr(self.parent_scene, "node_hover_leave"):
+            self.parent_scene.node_hover_leave(self)
         super().hoverLeaveEvent(event)
 
     def paint(self, painter, option, widget):
-        fill_hex = self._effective_bg()
         self._sync_ink_color()
 
-        lift = -1.5 if (self._hovered and not self._is_resizing) else 0.0
-        box_rect = QRectF(lift, lift, float(self.width), float(self.height))
-        shadow_offset = float(Shadows.LG if (self.isSelected() or self._hovered) else Shadows.MD)
-        shadow_rect = QRectF(
-            shadow_offset,
-            shadow_offset,
-            float(self.width),
-            float(self.height),
-        )
+        box_rect = QRectF(0.0, 0.0, float(self.width), float(self.height))
 
-        # 1. Zero-blur solid black offset shadow
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QBrush(QColor(Colors.BLACK)))
-        painter.drawRoundedRect(shadow_rect, float(Radii.MD + 2), float(Radii.MD + 2))
+        # 1. Background Surface
+        fill_col = Colors.NODE_SURFACE_HOVER if self._hovered else Colors.NODE_SURFACE
+        painter.setBrush(QBrush(QColor(fill_col)))
 
-        # 2. Saturated pastel card face + thick black border
-        painter.setPen(QPen(QColor(Colors.BLACK), Borders.DEFAULT))
-        painter.setBrush(QBrush(QColor(fill_hex)))
-        painter.drawRoundedRect(box_rect, float(Radii.MD + 2), float(Radii.MD + 2))
+        # 2. Border
+        if self.isSelected():
+            border_pen = QPen(QColor(Colors.PRIMARY), 1.5)
+        elif self._hovered:
+            border_pen = QPen(QColor(Colors.PRIMARY_HOVER), 1.0)
+        else:
+            border_pen = QPen(QColor(Colors.BORDER), 1.0)
 
-        # 3. Neo-Brutalist Tag Pill
+        painter.setPen(border_pen)
+        painter.drawRoundedRect(box_rect, float(Radii.MD), float(Radii.MD))
+
+        # 3. Optional Left Accent Color Strip
+        accent_col = self.color
+        if accent_col and accent_col.lower() not in ("#000000", "#ffffff", Colors.SURFACE.lower()):
+            strip_rect = QRectF(box_rect.left() + 1.0, box_rect.top() + 4.0, 3.5, box_rect.height() - 8.0)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(QColor(accent_col)))
+            painter.drawRoundedRect(strip_rect, 1.5, 1.5)
+
+        # 4. Minimalist Tag Badge (Top Left)
         if self.tag:
-            tag_font = Typography.canvas_font(Typography.PT_NODE_TAG, QFont.Weight.Bold)
+            tag_font = Typography.canvas_font(Typography.PT_NODE_TAG, QFont.Weight.Medium)
             painter.setFont(tag_font)
             fm = painter.fontMetrics()
-            tag_upper = self.tag.upper()
-            text_width = fm.horizontalAdvance(tag_upper)
-            max_pill_w = max(44.0, float(self.width) - (56.0 if self.is_favorite else 28.0))
-            pill_w = min(float(text_width + Spacing.LG + 4), max_pill_w)
+            tag_text = self.tag
+            text_width = fm.horizontalAdvance(tag_text)
+            max_pill_w = max(40.0, float(self.width) - (48.0 if self.is_favorite else 24.0))
+            pill_w = min(float(text_width + Spacing.MD * 2), max_pill_w)
 
-            pill_rect = QRectF(
-                box_rect.left() + float(Spacing.LG),
-                box_rect.top() + float(Spacing.MD),
-                pill_w,
-                22.0,
-            )
-            pill_fill = resolve_accent_color(self.color, seed=self.tag, avoid_bg=fill_hex)
+            left_x = box_rect.left() + float(Spacing.MD + (6 if self.color else 0))
+            pill_rect = QRectF(left_x, box_rect.top() + 6.0, pill_w, 18.0)
 
-            # Mini hard shadow behind pill
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(Colors.BLACK)))
-            painter.drawRoundedRect(pill_rect.translated(2.0, 2.0), 11.0, 11.0)
+            painter.setPen(QPen(QColor(Colors.BORDER), 1.0))
+            painter.setBrush(QBrush(QColor(Colors.SURFACE_HOVER)))
+            painter.drawRoundedRect(pill_rect, float(Radii.SM), float(Radii.SM))
 
-            painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-            painter.setBrush(QBrush(QColor(pill_fill)))
-            painter.drawRoundedRect(pill_rect, 11.0, 11.0)
-
-            elided_tag = fm.elidedText(tag_upper, Qt.TextElideMode.ElideRight, int(pill_w - 10))
-            painter.setPen(QPen(readable_ink(pill_fill)))
+            elided_tag = fm.elidedText(tag_text, Qt.TextElideMode.ElideRight, int(pill_w - 8))
+            painter.setPen(QPen(QColor(Colors.TEXT_MUTED)))
             painter.drawText(pill_rect, Qt.AlignmentFlag.AlignCenter, elided_tag)
 
-        # 4. Favorite Star Sticker (Top Right)
+        # 5. Clean Gold Favorite Star Icon (Top Right)
         if self.is_favorite:
-            badge_sz = 24.0
-            star_rect = QRectF(
-                box_rect.right() - badge_sz - float(Spacing.MD),
-                box_rect.top() + float(Spacing.MD - 2),
-                badge_sz,
-                badge_sz,
-            )
-            star_bg = Colors.PINK if fill_hex.lower() == Colors.YELLOW.lower() else Colors.YELLOW
+            star_sz = 14.0
+            cx = box_rect.right() - star_sz / 2.0 - 8.0
+            cy = box_rect.top() + star_sz / 2.0 + 8.0
+
+            star_path = QPainterPath()
+            outer_r = 6.0
+            inner_r = 2.8
+            for i in range(10):
+                r = outer_r if i % 2 == 0 else inner_r
+                angle = -math.pi / 2.0 + i * math.pi / 5.0
+                px = cx + r * math.cos(angle)
+                py = cy + r * math.sin(angle)
+                if i == 0:
+                    star_path.moveTo(px, py)
+                else:
+                    star_path.lineTo(px, py)
+            star_path.closeSubpath()
+
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QBrush(QColor(Colors.BLACK)))
-            painter.drawRoundedRect(star_rect.translated(2.0, 2.0), 7.0, 7.0)
+            painter.setBrush(QBrush(QColor("#f59e0b")))
+            painter.drawPath(star_path)
 
-            painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-            painter.setBrush(QBrush(QColor(star_bg)))
-            painter.drawRoundedRect(star_rect, 7.0, 7.0)
-
-            star_font = Typography.canvas_font(11, QFont.Weight.Black)
-            painter.setFont(star_font)
-            painter.setPen(QPen(QColor(Colors.BLACK)))
-            painter.drawText(star_rect, Qt.AlignmentFlag.AlignCenter, "★")
-
-        # 5. Tactile diagonal resize grip lines (Bottom Right)
-        grip_pen = QPen(readable_ink(fill_hex), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
-        painter.setPen(grip_pen)
-        bx = box_rect.right() - 6.0
-        by = box_rect.bottom() - 6.0
-        painter.drawLine(QPointF(bx - 9.0, by), QPointF(bx, by - 9.0))
-        painter.drawLine(QPointF(bx - 4.0, by), QPointF(bx, by - 4.0))
-
-        # 6. Figma-like corner selection handles when selected
-        if self.isSelected():
-            h_sz = float(Metrics.SELECTION_HANDLE)
-            half = h_sz / 2.0
-            painter.setPen(QPen(QColor(Colors.BLACK), Borders.THIN))
-            painter.setBrush(QBrush(QColor(Colors.WHITE)))
-            for pt in (
-                box_rect.topLeft(),
-                box_rect.topRight(),
-                box_rect.bottomLeft(),
-                box_rect.bottomRight(),
-            ):
-                painter.drawRect(QRectF(pt.x() - half, pt.y() - half, h_sz, h_sz))
+        # 6. Subtle Corner Resize Grip (Bottom Right)
+        if self._hovered or self.isSelected():
+            grip_pen = QPen(QColor(Colors.BORDER), 1.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+            painter.setPen(grip_pen)
+            bx = box_rect.right() - 5.0
+            by = box_rect.bottom() - 5.0
+            painter.drawLine(QPointF(bx - 6.0, by), QPointF(bx, by - 6.0))
+            painter.drawLine(QPointF(bx - 3.0, by), QPointF(bx, by - 3.0))
 
     def itemChange(self, change, value):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
@@ -234,7 +238,14 @@ class NodeItem(QGraphicsItem):
 
     def mousePressEvent(self, event):
         pos = event.pos()
-        if pos.x() >= self.width - 22 and pos.y() >= self.height - 22:
+        self._drag_start_pos = self.pos()
+        if event.button() == Qt.MouseButton.LeftButton and hasattr(self.parent_scene, "capture_snapshot"):
+            self._pre_action_snapshot = self.parent_scene.capture_snapshot()
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and pos.x() >= self.width - 18
+            and pos.y() >= self.height - 18
+        ):
             self._is_resizing = True
             event.accept()
         else:
@@ -243,8 +254,8 @@ class NodeItem(QGraphicsItem):
 
     def mouseMoveEvent(self, event):
         if self._is_resizing:
-            new_w = max(150, int(event.pos().x()))
-            new_h = max(84, int(event.pos().y()))
+            new_w = max(140, int(event.pos().x()))
+            new_h = max(70, int(event.pos().y()))
             self.prepareGeometryChange()
             self.width = new_w
             self.height = new_h
@@ -259,10 +270,23 @@ class NodeItem(QGraphicsItem):
     def mouseReleaseEvent(self, event):
         if self._is_resizing:
             self._is_resizing = False
-            self.parent_scene.save_data()
+            if self._pre_action_snapshot and hasattr(self.parent_scene, "push_undo_snapshot"):
+                self.parent_scene.push_undo_snapshot(self._pre_action_snapshot)
+            self._pre_action_snapshot = None
+            if hasattr(self.parent_scene, "save_data"):
+                self.parent_scene.save_data()
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and self.pos() != self._drag_start_pos
+                and hasattr(self.parent_scene, "save_data")
+            ):
+                if self._pre_action_snapshot and hasattr(self.parent_scene, "push_undo_snapshot"):
+                    self.parent_scene.push_undo_snapshot(self._pre_action_snapshot)
+                self.parent_scene.save_data()
+            self._pre_action_snapshot = None
 
     def mouseDoubleClickEvent(self, event):
         if not self._is_resizing:

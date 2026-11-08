@@ -5,7 +5,7 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('ui/styles.qss', 'ui'), ('assets/fonts', 'assets/fonts')],
+    datas=[('ui/styles.qss', 'ui'), ('assets/fonts', 'assets/fonts'), ('assets/tessdata', 'assets/tessdata')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
