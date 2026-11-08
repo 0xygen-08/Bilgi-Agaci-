@@ -1,11 +1,11 @@
 # Bilgi Ağacı (Knowledge Tree)
 
-**Bilgi Ağacı (Knowledge Tree)**, zihin haritaları (mind maps) üzerinden görsel bir şekilde not almanızı, düşüncelerinizi organize etmenizi ve bağlantılar kurmanızı sağlayan Obsidian tarzı modern, minimalist ve kurumsal tasarımlı bir masaüstü uygulamasıdır.
+**Bilgi Ağacı (Knowledge Tree)**, zihin haritaları (mind maps) üzerinden görsel bir şekilde not almanızı, düşüncelerinizi organize etmenizi ve bağlantılar kurmanızı sağlayan modern, minimalist ve kurumsal tasarımlı bir masaüstü uygulamasıdır.
 
 ## Özellikler
 
 - **Görsel Zihin Haritası**: Notlarınızı sonsuz bir tuval üzerinde kutucuklar halinde oluşturun, boyutlandırın ve sağ tık sürükleme ile birbirine bağlayın.
-- **Obsidian Minimalist Tasarım Sistemi**: Dikkat dağıtmayan zarif koyu/açık tema, 1px zarif çerçeveler, düz ve modern yüzeyler, mor vurgular (`#7c3aed`), temiz tipografi ve geometrik vektör simgeler.
+- **Modern Minimalist Tasarım Sistemi**: Dikkat dağıtmayan zarif koyu/açık tema, 1px zarif çerçeveler, düz ve modern yüzeyler, mor vurgular (`#7c3aed`), temiz tipografi ve geometrik vektör simgeler.
 - **Gelişmiş Zengin Metin Editörü (Rich Text)**: Başlıklar (`H1`, `H2`), listeler, kalın/italik yazılar (`Ctrl+B`, `Ctrl+I`), metin rengi ve sürükle-bırak görsel/PDF desteği.
 - **Fotoğraf (OCR) ve PDF Metin Çıkarma & Arama**: Nota eklenen veya sürüklenen fotoğraflardaki ve PDF belgelerindeki yazıları Türkçe/İngilizce OCR (`Tesseract` + `pypdf`) ile okur, nota aktarır ve arama indeksine kaydeder.
 - **Tüm Sekmeler, İçerik ve Fotoğraf/PDF Genel Araması**: Üst arama çubuğundan tüm sekmelerdeki düğüm başlıklarını, etiketleri, not içeriklerini ve fotoğraf/PDF içindeki yazıları arayın (`[OCR]` ve `[PDF]` etiketleriyle).

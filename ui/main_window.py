@@ -321,7 +321,7 @@ class _CanvasStageWidget(QWidget):
         self.btn_zoom_in.clicked.connect(self.canvas_view.zoom_in)
 
         self.btn_force_layout = BrutalIconButton("Ağ", variant="surface", size=28, min_width=38)
-        self.btn_force_layout.setToolTip(t("force_layout_tooltip", default="Obsidian Ağ Düzeni (Organize Et)"))
+        self.btn_force_layout.setToolTip(t("force_layout_tooltip", default="Ağ Düzeni (Organize Et)"))
 
         zoom_layout.addWidget(self.btn_zoom_out)
         zoom_layout.addWidget(self.btn_zoom_fit)
